@@ -1,0 +1,16 @@
+{
+  "name": "flipper-bridge-relay",
+  "version": "1.0.0",
+  "description": "FlipperBridge relay service — Cloudflare Worker that brokers messages between Claude and a Flipper Zero",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
+    "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0",
+    "vitest": "^1.0.0"
+  }
+}
