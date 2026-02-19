@@ -10,7 +10,7 @@
     "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0",
-    "vitest": "^1.0.0"
+    "vitest": "^1.0.0",
+    "wrangler": "^4.67.0"
   }
 }
