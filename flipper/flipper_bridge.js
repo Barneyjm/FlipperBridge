@@ -2,6 +2,8 @@
 // Connects to the FlipperBridge relay via FlipperHTTP (ESP32 WiFi)
 // Place at: /ext/apps/Scripts/flipper_bridge.js
 // Config at: /ext/apps_data/flipper_bridge/config.txt
+//   Line 1: relay URL
+//   Line 2: device token (any string 16+ chars)
 
 // --- Configuration ---
 let CONFIG_PATH = "/ext/apps_data/flipper_bridge/config.txt";
@@ -9,13 +11,14 @@ let POLL_INTERVAL = 3000;
 let RETRY_INTERVAL = 10000;
 
 // --- State ---
-let sessionId = "";
-let deviceKey = "";
+let deviceToken = "";
 let baseUrl = "";
 let running = true;
 
-// --- Serial Setup ---
+// --- Modules ---
 let serial = require("serial");
+let math = require("math");
+let storage = require("storage");
 
 function setupSerial() {
     serial.setup("usart", 115200);
@@ -25,7 +28,7 @@ function setupSerial() {
 // --- Serial Helpers ---
 function readResponse(timeoutMs) {
     let result = "";
-    let chunks = Math.ceil(timeoutMs / 500);
+    let chunks = math.ceil(timeoutMs / 500);
     let i = 0;
     for (i = 0; i < chunks; i++) {
         let chunk = serial.readAny(500);
@@ -43,7 +46,9 @@ function serialCommand(cmd) {
 }
 
 // --- JSON Helpers (no JSON.parse/stringify in mJS) ---
-function jsonValue(json, key) {
+// mJS only supports: slice, indexOf, at, charCodeAt, s[i], length
+function jsonValue(raw, key) {
+    let json = "" + raw;
     let search = '"' + key + '":"';
     let start = json.indexOf(search);
     if (start === -1) {
@@ -53,18 +58,18 @@ function jsonValue(json, key) {
         if (start === -1) return "";
         start = start + search.length;
         // Skip whitespace
-        while (start < json.length && json.substring(start, start + 1) === " ") {
+        while (start < json.length && json[start] === " ") {
             start = start + 1;
         }
         let end = json.indexOf(",", start);
         if (end === -1) end = json.indexOf("}", start);
         if (end === -1) return "";
-        return json.substring(start, end);
+        return json.slice(start, end);
     }
     start = start + search.length;
     let end = json.indexOf('"', start);
     if (end === -1) return "";
-    return json.substring(start, end);
+    return json.slice(start, end);
 }
 
 function buildJson(pairs) {
@@ -78,70 +83,55 @@ function buildJson(pairs) {
     return result;
 }
 
-// --- Config Loading ---
+// --- Read one line from a file ---
+function readLine(file) {
+    let line = "";
+    let buf;
+    while (true) {
+        buf = file.read("ascii", 1);
+        if (!buf || buf.length === 0) break;
+        if (buf === "\n") break;
+        if (buf !== "\r") {
+            line = line + buf;
+        }
+    }
+    return line;
+}
+
+// --- Config Loading (URL + token) ---
 function loadConfig() {
-    // Read config file using storage module
-    let storage = require("storage");
     let file = storage.openFile(CONFIG_PATH, "r", "open_existing");
     if (!file) {
-        print("ERROR: Cannot open config file");
+        print("ERROR: Cannot open config");
         print("Expected at:");
         print(CONFIG_PATH);
         return false;
     }
 
-    let content = "";
-    let buf;
-    while (true) {
-        buf = file.read("ascii", 128);
-        if (!buf || buf.length === 0) break;
-        content = content + buf;
-    }
+    // Line 1: relay URL
+    baseUrl = readLine(file);
+    // Line 2: device token
+    deviceToken = readLine(file);
     file.close();
 
-    if (content.length === 0) {
-        print("ERROR: Config file is empty");
+    if (baseUrl.length === 0) {
+        print("ERROR: Config is empty");
         return false;
     }
 
-    // Parse three lines: sessionId, deviceKey, baseUrl
-    let firstNewline = content.indexOf("\n");
-    if (firstNewline === -1) {
-        print("ERROR: Invalid config format");
+    // Ensure URL ends with /
+    if (baseUrl.indexOf("/", baseUrl.length - 1) === -1) {
+        baseUrl = baseUrl + "/";
+    }
+
+    if (deviceToken.length < 16) {
+        print("ERROR: Token too short");
+        print("Need 16+ chars on line 2");
         return false;
     }
-    sessionId = content.substring(0, firstNewline);
 
-    let rest = content.substring(firstNewline + 1, content.length);
-    let secondNewline = rest.indexOf("\n");
-    if (secondNewline === -1) {
-        print("ERROR: Invalid config format");
-        return false;
-    }
-    deviceKey = rest.substring(0, secondNewline);
-
-    let rest2 = rest.substring(secondNewline + 1, rest.length);
-    // Trim trailing newline if present
-    let thirdNewline = rest2.indexOf("\n");
-    if (thirdNewline !== -1) {
-        baseUrl = rest2.substring(0, thirdNewline);
-    } else {
-        baseUrl = rest2;
-    }
-
-    // Strip trailing carriage returns (Windows line endings)
-    if (sessionId.indexOf("\r") !== -1) {
-        sessionId = sessionId.substring(0, sessionId.indexOf("\r"));
-    }
-    if (deviceKey.indexOf("\r") !== -1) {
-        deviceKey = deviceKey.substring(0, deviceKey.indexOf("\r"));
-    }
-    if (baseUrl.indexOf("\r") !== -1) {
-        baseUrl = baseUrl.substring(0, baseUrl.indexOf("\r"));
-    }
-
-    print("Session: " + sessionId);
-    print("Relay:   " + baseUrl);
+    print("Relay: " + baseUrl);
+    print("Token: ok");
     return true;
 }
 
@@ -153,14 +143,14 @@ function httpGet(url) {
 }
 
 function httpPost(url, body) {
-    let payload = '{"url":"' + url + '","headers":{"Content-Type":"application/json","X-Device-Key":"' + deviceKey + '"},"payload":"' + body + '"}';
+    let payload = '{"url":"' + url + '","headers":{"Content-Type":"application/json","X-Device-Token":"' + deviceToken + '"},"payload":"' + body + '"}';
     serial.write("[POST/HTTP]" + payload + "\n");
     delay(3000);
     return readResponse(5000);
 }
 
 function httpGetWithAuth(url) {
-    let payload = '{"url":"' + url + '","headers":{"X-Device-Key":"' + deviceKey + '"},"payload":""}';
+    let payload = '{"url":"' + url + '","headers":{"X-Device-Token":"' + deviceToken + '"},"payload":""}';
     serial.write("[GET/HTTP]" + payload + "\n");
     delay(3000);
     return readResponse(5000);
@@ -191,34 +181,19 @@ function checkWifi() {
 // --- Register with Relay ---
 function registerDevice() {
     print("Registering with relay...");
-    let url = baseUrl + "/api/device/" + sessionId + "/register";
-    // Build a simple body — escape quotes for nested JSON
-    let body = buildJson([
-        ["firmware", "Momentum"],
-        ["name", "FlipperZero"]
-    ]);
-
-    // Need to escape the body for the outer JSON
-    let escapedBody = "";
-    let ci = 0;
-    for (ci = 0; ci < body.length; ci++) {
-        let ch = body.substring(ci, ci + 1);
-        if (ch === '"') {
-            escapedBody = escapedBody + '\\"';
-        } else {
-            escapedBody = escapedBody + ch;
-        }
-    }
+    let url = baseUrl + "api/device/register";
+    let escapedBody = '{\\"firmware\\":\\"Momentum\\",\\"name\\":\\"FlipperZero\\"}';
 
     let resp = httpPost(url, escapedBody);
 
     if (resp.indexOf("ok") !== -1) {
-        print("Registered OK");
+        let devId = jsonValue(resp, "device_id");
+        print("Device ID: " + devId);
         return true;
     }
 
     print("Register failed:");
-    print(resp.substring(0, 100));
+    print(resp.slice(0, 100));
     return false;
 }
 
@@ -229,7 +204,6 @@ function executeCommand(type, payload) {
     }
 
     if (type === "post") {
-        // Payload is already a JSON string for POST/HTTP
         serial.write("[POST/HTTP]" + payload + "\n");
         delay(3000);
         return readResponse(5000);
@@ -244,7 +218,7 @@ function executeCommand(type, payload) {
 
 // --- Poll for Commands ---
 function pollOnce() {
-    let url = baseUrl + "/api/device/" + sessionId + "/poll";
+    let url = baseUrl + "api/device/poll";
     let resp = httpGetWithAuth(url);
 
     // Check if there is a command
@@ -257,14 +231,14 @@ function pollOnce() {
     let payload = jsonValue(resp, "payload");
 
     print("CMD: " + type);
-    print("  " + payload.substring(0, 60));
+    print("  " + payload.slice(0, 60));
 
     // Execute the command
     let result = executeCommand(type, payload);
 
     // Truncate result for display
     if (result.length > 80) {
-        print("Result: " + result.substring(0, 80) + "...");
+        print("Result: " + result.slice(0, 80) + "...");
     } else {
         print("Result: " + result);
     }
@@ -273,18 +247,23 @@ function pollOnce() {
     submitResult(commandId, result);
 }
 
-function submitResult(commandId, result) {
-    let url = baseUrl + "/api/device/" + sessionId + "/result";
+function submitResult(commandId, rawResult) {
+    let url = baseUrl + "api/device/result";
+    let result = "" + rawResult;
 
-    // Escape result for JSON embedding
+    // Double-escape result for two JSON levels:
+    // Level 1: FlipperHTTP payload JSON string
+    // Level 2: actual POST body JSON sent to relay
     let escaped = "";
     let ri = 0;
     for (ri = 0; ri < result.length; ri++) {
-        let ch = result.substring(ri, ri + 1);
-        if (ch === '"') {
-            escaped = escaped + '\\"';
+        let ch = result[ri];
+        if (ch === "\\") {
+            escaped = escaped + "\\\\\\\\";
+        } else if (ch === '"') {
+            escaped = escaped + '\\\\\\"';
         } else if (ch === "\n") {
-            escaped = escaped + "\\n";
+            escaped = escaped + "\\\\n";
         } else if (ch === "\r") {
             // skip carriage returns
         } else {
@@ -294,7 +273,7 @@ function submitResult(commandId, result) {
 
     // Truncate if too long (mJS memory constraints)
     if (escaped.length > 4000) {
-        escaped = escaped.substring(0, 4000) + "...(truncated)";
+        escaped = escaped.slice(0, 4000) + "...(truncated)";
     }
 
     let body = '{\\"command_id\\":\\"' + commandId + '\\",\\"result\\":\\"' + escaped + '\\"}';
@@ -304,7 +283,7 @@ function submitResult(commandId, result) {
 // --- Main ---
 function main() {
     print("=== FlipperBridge ===");
-    print("v1.0");
+    print("v2.1");
     print("");
 
     setupSerial();
@@ -319,7 +298,7 @@ function main() {
         }
     }
 
-    // Load config
+    // Load config (URL + token)
     if (!loadConfig()) {
         print("Fix config and restart.");
         serial.end();
@@ -335,21 +314,20 @@ function main() {
         registered = registerDevice();
         if (!registered) {
             attempts = attempts + 1;
-            print("Retry " + to_string(attempts) + "/5...");
+            print("Retry " + attempts.toString() + "/5...");
             delay(5000);
         }
     }
 
     if (!registered) {
         print("FAILED to register.");
-        print("Check session ID & key.");
         serial.end();
         return;
     }
 
     print("");
-    print("Polling for commands...");
-    print("(every " + to_string(POLL_INTERVAL / 1000) + "s)");
+    print("Waiting for session...");
+    print("(polling every " + (POLL_INTERVAL / 1000).toString() + "s)");
 
     // Main poll loop
     while (running) {

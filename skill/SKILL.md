@@ -11,41 +11,39 @@ FlipperBridge lets you send commands to a user's Flipper Zero device over the in
 The user must have:
 1. A Flipper Zero with Momentum firmware
 2. An ESP32 WiFi module with FlipperHTTP firmware installed
-3. The `flipper_bridge.js` app running on the Flipper
-4. A config file on the Flipper with the session ID, device key, and relay URL
+3. The `flipper_bridge.js` app running on the Flipper (auto-registers on first launch)
+4. A config file on the Flipper with just the relay URL
 
 ## Session Workflow
 
-### 1. Create a Session
+### 1. Get Session Credentials from the User
+
+The user creates a session from the relay's landing page (or you can create one via API if they give you their device ID). Ask the user for:
+- **Session ID** (6 characters, e.g., `A7X29K`)
+- **Password** (they chose this when creating the session)
+
+Or, if the user provides their device ID, create a session:
 
 ```
 POST https://flipperbridge.dev/api/session
 Content-Type: application/json
 
-{"password": "user-chosen-password"}
+{"device_id": "a1b2c3d4", "password": "user-chosen-password"}
 ```
 
 Response:
 ```json
-{"session_id": "A7X29K", "device_key": "abc123device456"}
+{"session_id": "A7X29K"}
 ```
 
-Tell the user:
-- **Session ID:** `A7X29K`
-- **Device Key:** `abc123device456`
-- They need to put these in `/ext/apps_data/flipper_bridge/config.txt` on their Flipper SD card (three lines: session ID, device key, relay URL)
-- Then run `flipper_bridge.js` from Apps → Scripts
-
-### 2. Wait for Flipper to Connect
-
-Poll until the device connects:
+### 2. Verify Flipper is Connected
 
 ```
 GET https://flipperbridge.dev/api/session/A7X29K
 Authorization: Bearer user-chosen-password
 ```
 
-Check `device_connected` in the response. Once `true`, the Flipper is online and ready.
+Check `device_connected` in the response. Once `true`, the Flipper is online and ready. The `device_info` field shows the device name and firmware.
 
 ### 3. Send Commands
 
@@ -158,8 +156,8 @@ Parse the result and explain it naturally to the user. If the response is JSON, 
 
 **User:** "Can you check what my Flipper's public IP is?"
 
-1. Create session (if not already active)
-2. Wait for device connection
+1. Ask user for session ID and password (they create sessions from the landing page)
+2. Verify device is connected
 3. Send command: `{"type": "get", "payload": "https://httpbin.org/ip"}`
 4. Poll for result
 5. Parse and share: "Your Flipper's public IP is 203.0.113.42"

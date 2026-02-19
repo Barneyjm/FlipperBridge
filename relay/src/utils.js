@@ -3,9 +3,10 @@
  */
 
 const SESSION_TTL = 3600; // 1 hour in seconds
+const DEVICE_TTL = 86400; // 24 hours in seconds
 const MAX_PAYLOAD_SIZE = 65536; // 64KB
 const COMMAND_RATE_LIMIT = 10; // commands per minute
-const POLL_RATE_LIMIT = 30; // requests per minute per IP
+const POLL_RATE_LIMIT = 30; // requests per minute per device
 
 // Characters for session IDs — no ambiguous chars (O/0/I/1/L)
 const SESSION_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -14,7 +15,7 @@ export function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Device-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Device-Token',
     'Access-Control-Max-Age': '86400',
   };
 }
@@ -43,17 +44,6 @@ export function generateSessionId() {
   return id;
 }
 
-export function generateDeviceKey() {
-  const array = new Uint8Array(16);
-  crypto.getRandomValues(array);
-  let key = '';
-  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 16; i++) {
-    key += chars[array[i] % chars.length];
-  }
-  return key;
-}
-
 export function generateCommandId() {
   return crypto.randomUUID();
 }
@@ -64,6 +54,25 @@ export async function hashPassword(password) {
   const hash = await crypto.subtle.digest('SHA-256', data);
   const hashArray = Array.from(new Uint8Array(hash));
   return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Hash a device token with SHA-256.
+ */
+export async function hashToken(token) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hash));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Derive an 8-char device ID from a token.
+ */
+export async function deriveDeviceId(token) {
+  const fullHash = await hashToken(token);
+  return fullHash.substring(0, 8);
 }
 
 /**
@@ -82,6 +91,25 @@ export async function putSession(env, sessionId, session) {
   session.last_active = Date.now();
   await env.SESSIONS.put(`session:${sessionId}`, JSON.stringify(session), {
     expirationTtl: SESSION_TTL,
+  });
+}
+
+/**
+ * Retrieve a device from KV. Returns null if not found or expired.
+ */
+export async function getDevice(env, deviceId) {
+  const raw = await env.SESSIONS.get(`device:${deviceId}`);
+  if (!raw) return null;
+  return JSON.parse(raw);
+}
+
+/**
+ * Save a device to KV with TTL refresh.
+ */
+export async function putDevice(env, deviceId, device) {
+  device.last_seen = Date.now();
+  await env.SESSIONS.put(`device:${deviceId}`, JSON.stringify(device), {
+    expirationTtl: DEVICE_TTL,
   });
 }
 
@@ -105,19 +133,21 @@ export async function authClaude(request, env, sessionId) {
 }
 
 /**
- * Authenticate a Flipper-side request using X-Device-Key header.
- * Returns the session or null.
+ * Authenticate a Flipper-side request using X-Device-Token header.
+ * Returns { device, deviceId } or null.
  */
-export async function authDevice(request, env, sessionId) {
-  const deviceKey = request.headers.get('X-Device-Key');
-  if (!deviceKey) return null;
+export async function authDevice(request, env) {
+  const token = request.headers.get('X-Device-Token');
+  if (!token) return null;
 
-  const session = await getSession(env, sessionId);
-  if (!session) return null;
+  const deviceId = await deriveDeviceId(token);
+  const device = await getDevice(env, deviceId);
+  if (!device) return null;
 
-  if (deviceKey !== session.device_key) return null;
+  const tokenHash = await hashToken(token);
+  if (tokenHash !== device.token_hash) return null;
 
-  return session;
+  return { device, deviceId };
 }
 
 /**
@@ -155,4 +185,4 @@ export async function parseBody(request) {
   }
 }
 
-export { SESSION_TTL, MAX_PAYLOAD_SIZE, COMMAND_RATE_LIMIT, POLL_RATE_LIMIT };
+export { SESSION_TTL, DEVICE_TTL, MAX_PAYLOAD_SIZE, COMMAND_RATE_LIMIT, POLL_RATE_LIMIT };

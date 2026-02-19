@@ -58,12 +58,8 @@ const HTML = `<!DOCTYPE html>
       padding: 0;
     }
     .card li::before {
-      content: "▸ ";
+      content: "\\25B8 ";
       color: #ff8c00;
-    }
-    .session-box {
-      text-align: center;
-      padding: 2rem;
     }
     input[type="password"] {
       background: #0d1117;
@@ -91,6 +87,15 @@ const HTML = `<!DOCTYPE html>
     }
     button:hover { background: #ffaa33; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm {
+      padding: 0.4rem 1rem;
+      font-size: 0.85rem;
+    }
+    .btn-secondary {
+      background: #30363d;
+      color: #e6edf3;
+    }
+    .btn-secondary:hover { background: #484f58; }
     .result {
       margin-top: 1.5rem;
       padding: 1rem;
@@ -108,20 +113,6 @@ const HTML = `<!DOCTYPE html>
       letter-spacing: 0.3em;
       margin: 0.5rem 0;
     }
-    .result .device-key {
-      color: #ff8c00;
-      font-size: 1rem;
-      font-family: monospace;
-      word-break: break-all;
-    }
-    .copy-btn {
-      background: #30363d;
-      color: #e6edf3;
-      padding: 0.4rem 0.8rem;
-      font-size: 0.8rem;
-      margin-left: 0.5rem;
-    }
-    .copy-btn:hover { background: #484f58; }
     code {
       background: #0d1117;
       padding: 0.2rem 0.4rem;
@@ -140,6 +131,53 @@ const HTML = `<!DOCTYPE html>
     .status-indicator.waiting { background: #d29922; animation: pulse 1.5s infinite; }
     .status-indicator.disconnected { background: #f85149; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .device-list { min-height: 60px; }
+    .device-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.75rem 1rem;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+    }
+    .device-info { flex: 1; }
+    .device-name {
+      color: #e6edf3;
+      font-weight: 600;
+      font-size: 1rem;
+    }
+    .device-meta {
+      color: #8b949e;
+      font-size: 0.8rem;
+      margin-top: 0.2rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge-available { background: #238636; color: #e6edf3; }
+    .badge-busy { background: #9e6a03; color: #e6edf3; }
+    .empty-state {
+      text-align: center;
+      padding: 2rem;
+      color: #484f58;
+    }
+    .session-form {
+      text-align: center;
+      padding: 1rem 0;
+      display: none;
+    }
+    .session-form.show { display: block; }
+    .session-form-target {
+      color: #58a6ff;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+    }
     .footer {
       margin-top: 2rem;
       padding: 1rem;
@@ -166,25 +204,39 @@ const HTML = `<!DOCTYPE html>
       Claude &nbsp;&#8596;&nbsp; Relay (this server) &nbsp;&#8596;&nbsp; WiFi &nbsp;&#8596;&nbsp; Flipper Zero
     </div>
 
-    <div class="card session-box">
-      <h2>Create a Session</h2>
-      <p style="margin-bottom: 1rem;">Choose a password to protect your session.</p>
-      <input type="password" id="password" placeholder="Session password" />
+    <div class="card" id="tokenCard">
+      <h2>Connect to Your Device</h2>
+      <p style="color:#8b949e;margin-bottom:1rem;">Enter the device token from line 2 of your Flipper's config.txt</p>
+      <input type="password" id="deviceToken" placeholder="Device token" />
+      <br>
+      <button onclick="connectWithToken()">Connect</button>
+    </div>
+
+    <div class="card" id="deviceCard" style="display:none;">
+      <h2>Device <button class="btn-sm btn-secondary" onclick="loadDevices()" style="margin-left:0.5rem;vertical-align:middle;">Refresh</button></h2>
+      <div class="device-list" id="deviceList">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+
+    <div class="card session-form" id="sessionForm">
+      <h2>Create Session</h2>
+      <p class="session-form-target">for <span id="targetDeviceName"></span> (<span id="targetDeviceIdDisplay"></span>)</p>
+      <input type="hidden" id="targetDeviceId" />
+      <input type="password" id="password" placeholder="Session password (min 4 chars)" />
       <br>
       <button id="createBtn" onclick="createSession()">Create Session</button>
+      <button class="btn-sm btn-secondary" onclick="cancelSession()" style="margin-left:0.5rem;">Cancel</button>
       <div class="result" id="sessionResult">
         <div class="label">Session ID</div>
         <div class="value" id="sessionId"></div>
-        <div class="label">Device Key</div>
-        <div class="device-key" id="deviceKey"></div>
-        <button class="copy-btn" onclick="copyConfig()">Copy Config</button>
-        <p style="margin-top: 1rem; color: #8b949e; font-size: 0.85rem;">
-          Enter these in your Flipper's config file to connect.
+        <p style="margin-top: 0.5rem; color: #8b949e; font-size: 0.85rem;">
+          Give Claude this session ID and your password to start sending commands.
         </p>
         <div style="margin-top: 1rem;">
           <div class="label">
             <span class="status-indicator waiting" id="statusDot"></span>
-            <span id="statusText">Waiting for Flipper to connect...</span>
+            <span id="statusText">Waiting for activity...</span>
           </div>
         </div>
       </div>
@@ -195,19 +247,18 @@ const HTML = `<!DOCTYPE html>
       <ul>
         <li>Install <a href="https://github.com/jblanked/FlipperHTTP" style="color:#58a6ff">FlipperHTTP</a> firmware on your ESP32 module</li>
         <li>Copy <code>flipper_bridge.js</code> to <code>/ext/apps/Scripts/</code> on your Flipper SD card</li>
-        <li>Create config at <code>/ext/apps_data/flipper_bridge/config.txt</code></li>
-        <li>Enter the Session ID, Device Key, and relay URL in the config</li>
-        <li>Run the bridge app from Apps &rarr; Scripts &rarr; flipper_bridge</li>
-        <li>Tell Claude your session ID and password to start sending commands</li>
+        <li>Create config at <code>/ext/apps_data/flipper_bridge/config.txt</code> (see format below)</li>
+        <li>Run the bridge app on your Flipper &mdash; it will register with the relay</li>
+        <li>Enter your device token above to see your device and create a session</li>
+        <li>Tell Claude the session ID and password to start sending commands</li>
       </ul>
     </div>
 
     <div class="card">
       <h2>Config File Format</h2>
-      <p>Create <code>/ext/apps_data/flipper_bridge/config.txt</code> with three lines:</p>
-      <pre style="margin-top:0.5rem;color:#e6edf3;background:#0d1117;padding:0.75rem;border-radius:4px;font-size:0.9rem;"><span style="color:#3fb950">A7X29K</span>              &larr; Session ID
-<span style="color:#ff8c00">abc123device456</span>     &larr; Device Key
-<span style="color:#58a6ff">https://flipperbridge.dev</span>  &larr; Relay URL</pre>
+      <p>Create <code>/ext/apps_data/flipper_bridge/config.txt</code> with two lines:</p>
+      <pre style="margin-top:0.5rem;color:#e6edf3;background:#0d1117;padding:0.75rem;border-radius:4px;font-size:0.9rem;line-height:1.6;"><span style="color:#58a6ff">https://your-relay-url.dev/</span>  &larr; Relay URL
+<span style="color:#ff8c00">your-secret-token-here</span>     &larr; Device token (16+ chars)</pre>
     </div>
 
     <div class="card">
@@ -217,6 +268,7 @@ const HTML = `<!DOCTYPE html>
         <li>Let Claude interact with local network devices through the Flipper</li>
         <li>Read Flipper device info (firmware version, name)</li>
         <li>Sessions are ephemeral &mdash; auto-expire after 1 hour of inactivity</li>
+        <li>Device tokens persist across sessions &mdash; no reconfiguration needed</li>
       </ul>
     </div>
 
@@ -228,11 +280,83 @@ const HTML = `<!DOCTYPE html>
   <script>
     let currentSessionId = null;
     let currentPassword = null;
+    let currentToken = null;
     let pollInterval = null;
+    let deviceRefreshInterval = null;
+
+    async function connectWithToken() {
+      const token = document.getElementById('deviceToken').value;
+      if (!token || token.length < 16) {
+        alert('Device token must be at least 16 characters');
+        return;
+      }
+      currentToken = token;
+      document.getElementById('tokenCard').style.display = 'none';
+      document.getElementById('deviceCard').style.display = 'block';
+      await loadDevices();
+      startDeviceRefresh();
+    }
+
+    async function loadDevices() {
+      if (!currentToken) return;
+      try {
+        const resp = await fetch('/api/devices', {
+          headers: { 'X-Device-Token': currentToken },
+        });
+        const data = await resp.json();
+        const list = document.getElementById('deviceList');
+
+        if (!resp.ok || !data.devices || data.devices.length === 0) {
+          list.innerHTML = '<div class="empty-state">No device found for this token. Make sure the bridge is running on your Flipper.</div>';
+          return;
+        }
+
+        let html = '';
+        for (const d of data.devices) {
+          const ago = timeAgo(d.last_seen);
+          const badge = d.has_session
+            ? '<span class="badge badge-busy">In Session</span>'
+            : '<span class="badge badge-available">Available</span>';
+          const btn = d.has_session
+            ? ''
+            : '<button class="btn-sm" onclick="selectDevice(\\'' + d.device_id + '\\', \\'' + escHtml(d.name) + '\\')">Create Session</button>';
+          html += '<div class="device-item">'
+            + '<div class="device-info">'
+            + '<div class="device-name">' + escHtml(d.name) + ' ' + badge + '</div>'
+            + '<div class="device-meta">' + escHtml(d.firmware) + ' &middot; ' + escHtml(d.device_id) + ' &middot; ' + ago + '</div>'
+            + '</div>'
+            + btn
+            + '</div>';
+        }
+        list.innerHTML = html;
+      } catch (e) {
+        document.getElementById('deviceList').innerHTML = '<div class="empty-state">Failed to load devices.</div>';
+      }
+    }
+
+    function selectDevice(deviceId, deviceName) {
+      document.getElementById('targetDeviceId').value = deviceId;
+      document.getElementById('targetDeviceName').textContent = deviceName;
+      document.getElementById('targetDeviceIdDisplay').textContent = deviceId;
+      document.getElementById('sessionForm').classList.add('show');
+      document.getElementById('sessionResult').classList.remove('show');
+      document.getElementById('password').value = '';
+      document.getElementById('password').focus();
+      if (deviceRefreshInterval) clearInterval(deviceRefreshInterval);
+    }
+
+    function cancelSession() {
+      document.getElementById('sessionForm').classList.remove('show');
+      if (pollInterval) clearInterval(pollInterval);
+      currentSessionId = null;
+      currentPassword = null;
+      startDeviceRefresh();
+    }
 
     async function createSession() {
       const btn = document.getElementById('createBtn');
       const pw = document.getElementById('password').value;
+      const deviceId = document.getElementById('targetDeviceId').value;
       if (!pw || pw.length < 4) {
         alert('Password must be at least 4 characters');
         return;
@@ -243,7 +367,7 @@ const HTML = `<!DOCTYPE html>
         const resp = await fetch('/api/session', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password: pw }),
+          body: JSON.stringify({ device_id: deviceId, password: pw, device_token: currentToken }),
         });
         const data = await resp.json();
         if (!resp.ok) {
@@ -253,22 +377,15 @@ const HTML = `<!DOCTYPE html>
         currentSessionId = data.session_id;
         currentPassword = pw;
         document.getElementById('sessionId').textContent = data.session_id;
-        document.getElementById('deviceKey').textContent = data.device_key;
         document.getElementById('sessionResult').classList.add('show');
         startPolling();
+        loadDevices();
       } catch (e) {
         alert('Network error: ' + e.message);
       } finally {
         btn.disabled = false;
         btn.textContent = 'Create Session';
       }
-    }
-
-    function copyConfig() {
-      const sid = document.getElementById('sessionId').textContent;
-      const dk = document.getElementById('deviceKey').textContent;
-      const url = window.location.origin;
-      navigator.clipboard.writeText(sid + '\\n' + dk + '\\n' + url);
     }
 
     function startPolling() {
@@ -279,22 +396,45 @@ const HTML = `<!DOCTYPE html>
             headers: { 'Authorization': 'Bearer ' + currentPassword },
           });
           const data = await resp.json();
+          const dot = document.getElementById('statusDot');
+          const text = document.getElementById('statusText');
           if (data.device_connected) {
-            const dot = document.getElementById('statusDot');
-            const text = document.getElementById('statusText');
             dot.className = 'status-indicator connected';
             let info = 'Flipper connected';
             if (data.device_info) {
-              info += ' — ' + (data.device_info.name || '') + ' (' + (data.device_info.firmware || '') + ')';
+              info += ' \\u2014 ' + (data.device_info.name || '') + ' (' + (data.device_info.firmware || '') + ')';
             }
             text.textContent = info;
-            clearInterval(pollInterval);
+          } else {
+            dot.className = 'status-indicator waiting';
+            text.textContent = 'Waiting for Flipper to poll...';
           }
         } catch(e) {
           // ignore poll errors
         }
       }, 3000);
     }
+
+    function startDeviceRefresh() {
+      if (deviceRefreshInterval) clearInterval(deviceRefreshInterval);
+      deviceRefreshInterval = setInterval(loadDevices, 5000);
+    }
+
+    function timeAgo(ts) {
+      const diff = Math.floor((Date.now() - ts) / 1000);
+      if (diff < 10) return 'just now';
+      if (diff < 60) return diff + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Focus the token input
+    document.getElementById('deviceToken').focus();
   </script>
 </body>
 </html>`;
