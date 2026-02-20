@@ -13,7 +13,7 @@ import {
   COMMAND_RATE_LIMIT,
 } from '../utils.js';
 
-const VALID_COMMAND_TYPES = ['get', 'post', 'cli'];
+const VALID_COMMAND_TYPES = ['get', 'post', 'subghz', 'js', 'write_file'];
 
 export const handleCommand = {
   /**
@@ -42,7 +42,7 @@ export const handleCommand = {
     }
 
     if (!VALID_COMMAND_TYPES.includes(body.type)) {
-      return errorResponse('Invalid command type. Must be: get, post, or cli');
+      return errorResponse('Invalid command type. Must be: get, post, subghz, js, or write_file');
     }
 
     if (typeof body.payload !== 'string') {
