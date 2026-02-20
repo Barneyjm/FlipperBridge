@@ -104,12 +104,14 @@ export const handleSession = {
     if (session.device_id) {
       const device = await getDevice(env, session.device_id);
       if (device) {
-        deviceConnected = (Date.now() - device.last_seen) < 30000;
+        // Check heartbeat key (written by poll) for connection status
+        const heartbeat = await env.SESSIONS.get(`heartbeat:${session.device_id}`);
+        deviceConnected = heartbeat ? (Date.now() - parseInt(heartbeat)) < 30000 : false;
         deviceInfo = {
           device_id: device.device_id,
           name: device.name,
           firmware: device.firmware,
-          last_seen: device.last_seen,
+          last_seen: heartbeat ? parseInt(heartbeat) : device.last_seen,
         };
       }
     }

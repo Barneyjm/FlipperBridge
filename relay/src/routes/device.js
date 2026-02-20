@@ -73,13 +73,14 @@ export const handleDevice = {
       return errorResponse('Rate limit exceeded', 429);
     }
 
-    // Re-read device to avoid KV eventual-consistency race with session creation.
-    // authDevice may have read a stale copy missing a freshly-bound session_id.
-    const freshDevice = await getDevice(env, deviceId) || device;
+    // Refresh device heartbeat in a separate KV key to avoid overwriting
+    // session_id due to KV eventual-consistency races.
+    await env.SESSIONS.put(`heartbeat:${deviceId}`, String(Date.now()), {
+      expirationTtl: 60,
+    });
 
-    // Refresh device TTL (preserve the freshest session_id)
-    freshDevice.last_seen = Date.now();
-    await putDevice(env, deviceId, freshDevice);
+    // Re-read device for the freshest session_id (authDevice may have a stale copy)
+    const freshDevice = await getDevice(env, deviceId) || device;
 
     // No session bound
     if (!freshDevice.session_id) {
@@ -120,7 +121,7 @@ export const handleDevice = {
     }
     const { device, deviceId } = auth;
 
-    // Re-read to get freshest session_id
+    // Re-read device for freshest session_id
     const freshDevice = await getDevice(env, deviceId) || device;
 
     if (!freshDevice.session_id) {
@@ -156,8 +157,14 @@ export const handleDevice = {
 
   /**
    * DELETE /api/device/:id/session — Force-evict a device's session.
+   * Requires X-Device-Token header matching the device.
    */
   async evictSession(request, env, deviceId) {
+    const auth = await authDevice(request, env);
+    if (!auth || auth.deviceId !== deviceId) {
+      return errorResponse('Unauthorized', 401);
+    }
+
     const device = await getDevice(env, deviceId);
     if (!device) {
       return errorResponse('Device not found', 404);
@@ -179,8 +186,14 @@ export const handleDevice = {
 
   /**
    * DELETE /api/device/:id — Delete a device record.
+   * Requires X-Device-Token header matching the device.
    */
   async delete(request, env, deviceId) {
+    const auth = await authDevice(request, env);
+    if (!auth || auth.deviceId !== deviceId) {
+      return errorResponse('Unauthorized', 401);
+    }
+
     const device = await getDevice(env, deviceId);
     if (!device) {
       return errorResponse('Device not found', 404);

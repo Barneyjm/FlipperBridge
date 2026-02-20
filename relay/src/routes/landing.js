@@ -556,8 +556,8 @@ const HTML = `<!DOCTYPE html>
             ? '<span class="badge badge-busy">In Session</span>'
             : '<span class="badge badge-available">Available</span>';
           const btn = d.has_session
-            ? '<button class="btn-sm btn-danger" onclick="evictSession(\\'' + d.device_id + '\\')">Evict</button>'
-            : '<button class="btn-sm" onclick="selectDevice(\\'' + d.device_id + '\\', \\'' + escHtml(d.name) + '\\')">Create Session</button>';
+            ? '<button class="btn-sm btn-danger" onclick="evictSession(&#39;' + escAttr(d.device_id) + '&#39;)">Evict</button>'
+            : '<button class="btn-sm" onclick="selectDevice(&#39;' + escAttr(d.device_id) + '&#39;, &#39;' + escAttr(d.name) + '&#39;)">Create Session</button>';
           html += '<div class="device-item">'
             + '<div class="device-info">'
             + '<div class="device-name">' + escHtml(d.name) + ' ' + badge + '</div>'
@@ -575,7 +575,10 @@ const HTML = `<!DOCTYPE html>
     async function evictSession(deviceId) {
       if (!confirm('Evict the current session from this device?')) return;
       try {
-        await fetch('/api/device/' + deviceId + '/session', { method: 'DELETE' });
+        await fetch('/api/device/' + deviceId + '/session', {
+          method: 'DELETE',
+          headers: { 'X-Device-Token': currentToken },
+        });
         await loadDevices();
       } catch (e) {
         alert('Failed to evict: ' + e.message);
@@ -944,7 +947,11 @@ const HTML = `<!DOCTYPE html>
     }
 
     function escHtml(s) {
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function escAttr(s) {
+      return escHtml(s);
     }
 
     // Close modal on backdrop click

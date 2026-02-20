@@ -78,10 +78,11 @@ async function registerDevice(env) {
   return data.device_id;
 }
 
-async function createSessionForDevice(env, deviceId, password = 'testpassword') {
+async function createSessionForDevice(env, deviceId, password = 'testpassword', token = DEVICE_TOKEN) {
   const req = makeRequest('POST', '/api/session', {
     device_id: deviceId,
     password,
+    device_token: token,
   });
   const resp = await worker.fetch(req, env);
   return { resp, data: await jsonBody(resp) };
@@ -178,7 +179,9 @@ describe('FlipperBridge Relay', () => {
     it('lists registered devices', async () => {
       await registerDevice(env);
 
-      const req = makeRequest('GET', '/api/devices');
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
       const resp = await worker.fetch(req, env);
       const data = await jsonBody(resp);
 
@@ -189,17 +192,18 @@ describe('FlipperBridge Relay', () => {
       expect(data.devices[0].has_session).toBe(false);
     });
 
-    it('returns empty list when no devices', async () => {
+    it('rejects listing without token', async () => {
       const req = makeRequest('GET', '/api/devices');
       const resp = await worker.fetch(req, env);
-      const data = await jsonBody(resp);
-      expect(data.devices).toHaveLength(0);
+      expect(resp.status).toBe(401);
     });
 
     it('does not expose token_hash', async () => {
       await registerDevice(env);
 
-      const req = makeRequest('GET', '/api/devices');
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
       const resp = await worker.fetch(req, env);
       const data = await jsonBody(resp);
       expect(data.devices[0].token_hash).toBeUndefined();
@@ -209,7 +213,9 @@ describe('FlipperBridge Relay', () => {
       const deviceId = await registerDevice(env);
       await createSessionForDevice(env, deviceId);
 
-      const req = makeRequest('GET', '/api/devices');
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
       const resp = await worker.fetch(req, env);
       const data = await jsonBody(resp);
       expect(data.devices[0].has_session).toBe(true);
@@ -242,6 +248,7 @@ describe('FlipperBridge Relay', () => {
       const req = makeRequest('POST', '/api/session', {
         device_id: 'xxxxxxxx',
         password: 'test1234',
+        device_token: DEVICE_TOKEN,
       });
       const resp = await worker.fetch(req, env);
       expect(resp.status).toBe(404);
