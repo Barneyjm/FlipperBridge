@@ -31,6 +31,18 @@ function createMockKV() {
     async delete(key) {
       store.delete(key);
     },
+    async list(opts) {
+      const prefix = opts && opts.prefix ? opts.prefix : '';
+      const keys = [];
+      for (const [key, entry] of store) {
+        if (key.startsWith(prefix)) {
+          if (!entry.expireAt || Date.now() <= entry.expireAt) {
+            keys.push({ name: key });
+          }
+        }
+      }
+      return { keys, list_complete: true, cursor: '' };
+    },
     _store: store,
   };
 }
@@ -51,6 +63,29 @@ function makeRequest(method, path, body, headers = {}) {
 
 async function jsonBody(response) {
   return JSON.parse(await response.text());
+}
+
+// --- Test helpers ---
+const DEVICE_TOKEN = 'abcdefghij1234567890abcdefghij12'; // 32 chars
+
+async function registerDevice(env) {
+  const req = makeRequest('POST', '/api/device/register',
+    { firmware: 'Momentum', name: 'TestFlipper' },
+    { 'X-Device-Token': DEVICE_TOKEN }
+  );
+  const resp = await worker.fetch(req, env);
+  const data = await jsonBody(resp);
+  return data.device_id;
+}
+
+async function createSessionForDevice(env, deviceId, password = 'testpassword', token = DEVICE_TOKEN) {
+  const req = makeRequest('POST', '/api/session', {
+    device_id: deviceId,
+    password,
+    device_token: token,
+  });
+  const resp = await worker.fetch(req, env);
+  return { resp, data: await jsonBody(resp) };
 }
 
 // --- Tests ---
@@ -77,43 +112,181 @@ describe('FlipperBridge Relay', () => {
       const resp = await worker.fetch(req, env);
       expect(resp.status).toBe(204);
       expect(resp.headers.get('Access-Control-Allow-Origin')).toBe('*');
+      expect(resp.headers.get('Access-Control-Allow-Headers')).toContain('X-Device-Token');
     });
   });
 
-  describe('POST /api/session', () => {
-    it('creates a session with valid password', async () => {
-      const req = makeRequest('POST', '/api/session', { password: 'test1234' });
+  describe('Device registration', () => {
+    it('registers a new device with token', async () => {
+      const req = makeRequest('POST', '/api/device/register',
+        { firmware: 'Momentum MNTM-011', name: 'MyFlipper' },
+        { 'X-Device-Token': DEVICE_TOKEN }
+      );
       const resp = await worker.fetch(req, env);
       const data = await jsonBody(resp);
 
-      expect(resp.status).toBe(201);
-      expect(data.session_id).toMatch(/^[A-Z0-9]{6}$/);
-      expect(data.device_key).toHaveLength(16);
+      expect(resp.status).toBe(200);
+      expect(data.ok).toBe(true);
+      expect(data.device_id).toHaveLength(8);
     });
 
-    it('rejects missing password', async () => {
-      const req = makeRequest('POST', '/api/session', {});
+    it('returns consistent device_id for same token', async () => {
+      const id1 = await registerDevice(env);
+      const id2 = await registerDevice(env);
+      expect(id1).toBe(id2);
+    });
+
+    it('rejects missing token header', async () => {
+      const req = makeRequest('POST', '/api/device/register',
+        { firmware: 'test', name: 'test' }
+      );
+      const resp = await worker.fetch(req, env);
+      expect(resp.status).toBe(401);
+    });
+
+    it('rejects short token', async () => {
+      const req = makeRequest('POST', '/api/device/register',
+        { firmware: 'test', name: 'test' },
+        { 'X-Device-Token': 'tooshort' }
+      );
+      const resp = await worker.fetch(req, env);
+      expect(resp.status).toBe(401);
+    });
+
+    it('preserves session_id on re-registration', async () => {
+      const deviceId = await registerDevice(env);
+      const { data } = await createSessionForDevice(env, deviceId);
+      const sessionId = data.session_id;
+
+      // Re-register
+      const req = makeRequest('POST', '/api/device/register',
+        { firmware: 'NewFW', name: 'UpdatedName' },
+        { 'X-Device-Token': DEVICE_TOKEN }
+      );
+      const resp = await worker.fetch(req, env);
+      expect(resp.status).toBe(200);
+
+      // Verify session is still bound
+      const devRaw = await env.SESSIONS.get(`device:${deviceId}`);
+      const dev = JSON.parse(devRaw);
+      expect(dev.session_id).toBe(sessionId);
+      expect(dev.name).toBe('UpdatedName');
+      expect(dev.firmware).toBe('NewFW');
+    });
+  });
+
+  describe('Device listing', () => {
+    it('lists registered devices', async () => {
+      await registerDevice(env);
+
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
+      const resp = await worker.fetch(req, env);
+      const data = await jsonBody(resp);
+
+      expect(resp.status).toBe(200);
+      expect(data.devices).toHaveLength(1);
+      expect(data.devices[0].name).toBe('TestFlipper');
+      expect(data.devices[0].firmware).toBe('Momentum');
+      expect(data.devices[0].has_session).toBe(false);
+    });
+
+    it('rejects listing without token', async () => {
+      const req = makeRequest('GET', '/api/devices');
+      const resp = await worker.fetch(req, env);
+      expect(resp.status).toBe(401);
+    });
+
+    it('does not expose token_hash', async () => {
+      await registerDevice(env);
+
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
+      const resp = await worker.fetch(req, env);
+      const data = await jsonBody(resp);
+      expect(data.devices[0].token_hash).toBeUndefined();
+    });
+
+    it('shows has_session when device has active session', async () => {
+      const deviceId = await registerDevice(env);
+      await createSessionForDevice(env, deviceId);
+
+      const req = makeRequest('GET', '/api/devices', null, {
+        'X-Device-Token': DEVICE_TOKEN,
+      });
+      const resp = await worker.fetch(req, env);
+      const data = await jsonBody(resp);
+      expect(data.devices[0].has_session).toBe(true);
+    });
+  });
+
+  describe('Session creation (new flow)', () => {
+    let deviceId;
+
+    beforeEach(async () => {
+      deviceId = await registerDevice(env);
+    });
+
+    it('creates session with device_id and password', async () => {
+      const { resp, data } = await createSessionForDevice(env, deviceId);
+
+      expect(resp.status).toBe(201);
+      expect(data.session_id).toMatch(/^[A-Z0-9]{6}$/);
+      // Should NOT return device_key
+      expect(data.device_key).toBeUndefined();
+    });
+
+    it('rejects missing device_id', async () => {
+      const req = makeRequest('POST', '/api/session', { password: 'test1234' });
       const resp = await worker.fetch(req, env);
       expect(resp.status).toBe(400);
+    });
+
+    it('rejects non-existent device_id', async () => {
+      const req = makeRequest('POST', '/api/session', {
+        device_id: 'xxxxxxxx',
+        password: 'test1234',
+        device_token: DEVICE_TOKEN,
+      });
+      const resp = await worker.fetch(req, env);
+      expect(resp.status).toBe(404);
     });
 
     it('rejects short password', async () => {
-      const req = makeRequest('POST', '/api/session', { password: 'ab' });
+      const req = makeRequest('POST', '/api/session', {
+        device_id: deviceId,
+        password: 'ab',
+      });
       const resp = await worker.fetch(req, env);
       expect(resp.status).toBe(400);
+    });
+
+    it('rejects session when device already has one', async () => {
+      await createSessionForDevice(env, deviceId);
+
+      const { resp } = await createSessionForDevice(env, deviceId, 'another1234');
+      expect(resp.status).toBe(409);
+    });
+
+    it('binds session to device record', async () => {
+      const { data } = await createSessionForDevice(env, deviceId);
+
+      const devRaw = await env.SESSIONS.get(`device:${deviceId}`);
+      const dev = JSON.parse(devRaw);
+      expect(dev.session_id).toBe(data.session_id);
     });
   });
 
   describe('Session lifecycle', () => {
-    let sessionId, deviceKey;
+    let deviceId, sessionId;
     const password = 'testpassword';
 
     beforeEach(async () => {
-      const req = makeRequest('POST', '/api/session', { password });
-      const resp = await worker.fetch(req, env);
-      const data = await jsonBody(resp);
+      deviceId = await registerDevice(env);
+      const { data } = await createSessionForDevice(env, deviceId, password);
       sessionId = data.session_id;
-      deviceKey = data.device_key;
     });
 
     it('gets session status with correct auth', async () => {
@@ -125,7 +298,8 @@ describe('FlipperBridge Relay', () => {
 
       expect(resp.status).toBe(200);
       expect(data.session_id).toBe(sessionId);
-      expect(data.device_connected).toBe(false);
+      expect(data.device_info).not.toBeNull();
+      expect(data.device_info.name).toBe('TestFlipper');
       expect(data.command).toBeNull();
     });
 
@@ -143,7 +317,7 @@ describe('FlipperBridge Relay', () => {
       expect(resp.status).toBe(401);
     });
 
-    it('deletes a session', async () => {
+    it('deletes session and unbinds device', async () => {
       const req = makeRequest('DELETE', `/api/session/${sessionId}`, null, {
         Authorization: `Bearer ${password}`,
       });
@@ -157,78 +331,25 @@ describe('FlipperBridge Relay', () => {
       });
       const resp2 = await worker.fetch(req2, env);
       expect(resp2.status).toBe(401);
-    });
-  });
 
-  describe('Device registration', () => {
-    let sessionId, deviceKey;
-    const password = 'testpassword';
-
-    beforeEach(async () => {
-      const req = makeRequest('POST', '/api/session', { password });
-      const resp = await worker.fetch(req, env);
-      const data = await jsonBody(resp);
-      sessionId = data.session_id;
-      deviceKey = data.device_key;
-    });
-
-    it('registers a device', async () => {
-      const req = makeRequest(
-        'POST',
-        `/api/device/${sessionId}/register`,
-        { firmware: 'Momentum MNTM-011', name: 'TestFlipper' },
-        { 'X-Device-Key': deviceKey }
-      );
-      const resp = await worker.fetch(req, env);
-      const data = await jsonBody(resp);
-      expect(data.ok).toBe(true);
-
-      // Check session reflects device connection
-      const statusReq = makeRequest('GET', `/api/session/${sessionId}`, null, {
-        Authorization: `Bearer ${password}`,
-      });
-      const statusResp = await worker.fetch(statusReq, env);
-      const statusData = await jsonBody(statusResp);
-      expect(statusData.device_connected).toBe(true);
-      expect(statusData.device_info.firmware).toBe('Momentum MNTM-011');
-      expect(statusData.device_info.name).toBe('TestFlipper');
-    });
-
-    it('rejects wrong device key', async () => {
-      const req = makeRequest(
-        'POST',
-        `/api/device/${sessionId}/register`,
-        { firmware: 'test', name: 'test' },
-        { 'X-Device-Key': 'wrongkey' }
-      );
-      const resp = await worker.fetch(req, env);
-      expect(resp.status).toBe(401);
+      // Verify device is unbound
+      const devRaw = await env.SESSIONS.get(`device:${deviceId}`);
+      const dev = JSON.parse(devRaw);
+      expect(dev.session_id).toBeNull();
     });
   });
 
   describe('Command flow', () => {
-    let sessionId, deviceKey;
+    let deviceId, sessionId;
     const password = 'testpassword';
 
     beforeEach(async () => {
-      // Create session
-      const createReq = makeRequest('POST', '/api/session', { password });
-      const createResp = await worker.fetch(createReq, env);
-      const createData = await jsonBody(createResp);
-      sessionId = createData.session_id;
-      deviceKey = createData.device_key;
-
-      // Register device
-      const regReq = makeRequest(
-        'POST',
-        `/api/device/${sessionId}/register`,
-        { firmware: 'Momentum', name: 'TestFlipper' },
-        { 'X-Device-Key': deviceKey }
-      );
-      await worker.fetch(regReq, env);
+      deviceId = await registerDevice(env);
+      const { data } = await createSessionForDevice(env, deviceId, password);
+      sessionId = data.session_id;
     });
 
-    it('submits a command and retrieves result', async () => {
+    it('submits a command and retrieves result (full lifecycle)', async () => {
       // Submit command
       const cmdReq = makeRequest(
         'POST',
@@ -243,8 +364,8 @@ describe('FlipperBridge Relay', () => {
       const commandId = cmdData.command_id;
 
       // Flipper polls and gets the command
-      const pollReq = makeRequest('GET', `/api/device/${sessionId}/poll`, null, {
-        'X-Device-Key': deviceKey,
+      const pollReq = makeRequest('GET', '/api/device/poll', null, {
+        'X-Device-Token': DEVICE_TOKEN,
       });
       const pollResp = await worker.fetch(pollReq, env);
       const pollData = await jsonBody(pollResp);
@@ -263,9 +384,9 @@ describe('FlipperBridge Relay', () => {
       // Flipper submits result
       const submitReq = makeRequest(
         'POST',
-        `/api/device/${sessionId}/result`,
+        '/api/device/result',
         { command_id: commandId, result: '{"origin": "1.2.3.4"}' },
-        { 'X-Device-Key': deviceKey }
+        { 'X-Device-Token': DEVICE_TOKEN }
       );
       const submitResp = await worker.fetch(submitReq, env);
       const submitData = await jsonBody(submitResp);
@@ -282,7 +403,6 @@ describe('FlipperBridge Relay', () => {
     });
 
     it('rejects second command while one is pending', async () => {
-      // Submit first command
       const cmd1 = makeRequest(
         'POST',
         `/api/session/${sessionId}/command`,
@@ -291,7 +411,6 @@ describe('FlipperBridge Relay', () => {
       );
       await worker.fetch(cmd1, env);
 
-      // Try to submit second
       const cmd2 = makeRequest(
         'POST',
         `/api/session/${sessionId}/command`,
@@ -303,7 +422,7 @@ describe('FlipperBridge Relay', () => {
     });
 
     it('allows new command after previous completes', async () => {
-      // Submit and complete first command
+      // Submit first command
       const cmd1 = makeRequest(
         'POST',
         `/api/session/${sessionId}/command`,
@@ -314,21 +433,21 @@ describe('FlipperBridge Relay', () => {
       const data1 = await jsonBody(resp1);
 
       // Flipper polls
-      const poll = makeRequest('GET', `/api/device/${sessionId}/poll`, null, {
-        'X-Device-Key': deviceKey,
+      const poll = makeRequest('GET', '/api/device/poll', null, {
+        'X-Device-Token': DEVICE_TOKEN,
       });
       await worker.fetch(poll, env);
 
       // Flipper submits result
       const submit = makeRequest(
         'POST',
-        `/api/device/${sessionId}/result`,
+        '/api/device/result',
         { command_id: data1.command_id, result: 'done' },
-        { 'X-Device-Key': deviceKey }
+        { 'X-Device-Token': DEVICE_TOKEN }
       );
       await worker.fetch(submit, env);
 
-      // Now submit second command
+      // Submit second command
       const cmd2 = makeRequest(
         'POST',
         `/api/session/${sessionId}/command`,
@@ -348,11 +467,28 @@ describe('FlipperBridge Relay', () => {
       expect(data.status).toBe('none');
     });
 
-    it('poll returns null when no command', async () => {
-      const req = makeRequest('GET', `/api/device/${sessionId}/poll`, null, {
-        'X-Device-Key': deviceKey,
+    it('device poll returns null when no command', async () => {
+      const req = makeRequest('GET', '/api/device/poll', null, {
+        'X-Device-Token': DEVICE_TOKEN,
       });
       const resp = await worker.fetch(req, env);
+      const data = await jsonBody(resp);
+      expect(data.command).toBeNull();
+    });
+
+    it('device poll returns null when no session', async () => {
+      // Register a second device with no session
+      const token2 = 'zzzzzzzzzz9876543210zzzzzzzzzz99';
+      const regReq = makeRequest('POST', '/api/device/register',
+        { firmware: 'test', name: 'NoSession' },
+        { 'X-Device-Token': token2 }
+      );
+      await worker.fetch(regReq, env);
+
+      const pollReq = makeRequest('GET', '/api/device/poll', null, {
+        'X-Device-Token': token2,
+      });
+      const resp = await worker.fetch(pollReq, env);
       const data = await jsonBody(resp);
       expect(data.command).toBeNull();
     });
@@ -380,17 +516,17 @@ describe('FlipperBridge Relay', () => {
       const cmdData = await jsonBody(cmdResp);
 
       // Flipper polls
-      const poll = makeRequest('GET', `/api/device/${sessionId}/poll`, null, {
-        'X-Device-Key': deviceKey,
+      const poll = makeRequest('GET', '/api/device/poll', null, {
+        'X-Device-Token': DEVICE_TOKEN,
       });
       await worker.fetch(poll, env);
 
       // Flipper submits error
       const submit = makeRequest(
         'POST',
-        `/api/device/${sessionId}/result`,
+        '/api/device/result',
         { command_id: cmdData.command_id, error: 'DNS resolution failed' },
-        { 'X-Device-Key': deviceKey }
+        { 'X-Device-Token': DEVICE_TOKEN }
       );
       await worker.fetch(submit, env);
 
@@ -412,7 +548,7 @@ describe('FlipperBridge Relay', () => {
       expect(resp.status).toBe(404);
     });
 
-    it('returns 404 for non-existent session', async () => {
+    it('returns 401 for non-existent session', async () => {
       const req = makeRequest('GET', '/api/session/ZZZZZZ', null, {
         Authorization: 'Bearer somepassword',
       });

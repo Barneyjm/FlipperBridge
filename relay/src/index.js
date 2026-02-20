@@ -7,7 +7,7 @@ import { handleSession } from './routes/session.js';
 import { handleCommand } from './routes/command.js';
 import { handleDevice } from './routes/device.js';
 import { handleLanding } from './routes/landing.js';
-import { corsHeaders, jsonResponse, errorResponse } from './utils.js';
+import { corsHeaders, errorResponse } from './utils.js';
 
 export default {
   async fetch(request, env) {
@@ -52,23 +52,32 @@ export default {
         }
       }
 
-      // --- Flipper-side endpoints ---
+      // --- Flipper-side endpoints (no session ID in path) ---
 
-      // Device routes: /api/device/:id/...
-      const deviceMatch = path.match(/^\/api\/device\/([A-Z0-9]{6})(\/.*)?$/);
-      if (deviceMatch) {
-        const sessionId = deviceMatch[1];
-        const subpath = deviceMatch[2] || '';
+      if (path === '/api/device/register' && request.method === 'POST') {
+        return handleDevice.register(request, env);
+      }
+      if (path === '/api/device/poll' && request.method === 'GET') {
+        return handleDevice.poll(request, env);
+      }
+      if (path === '/api/device/result' && request.method === 'POST') {
+        return handleDevice.result(request, env);
+      }
 
-        if (request.method === 'POST' && subpath === '/register') {
-          return handleDevice.register(request, env, sessionId);
-        }
-        if (request.method === 'GET' && subpath === '/poll') {
-          return handleDevice.poll(request, env, sessionId);
-        }
-        if (request.method === 'POST' && subpath === '/result') {
-          return handleDevice.result(request, env, sessionId);
-        }
+      // --- Device management ---
+
+      if (path === '/api/devices' && request.method === 'GET') {
+        return handleDevice.list(request, env);
+      }
+
+      const deviceSessionMatch = path.match(/^\/api\/device\/([a-f0-9]+)\/session$/);
+      if (deviceSessionMatch && request.method === 'DELETE') {
+        return handleDevice.evictSession(request, env, deviceSessionMatch[1]);
+      }
+
+      const deviceDeleteMatch = path.match(/^\/api\/device\/([a-f0-9]+)$/);
+      if (deviceDeleteMatch && request.method === 'DELETE') {
+        return handleDevice.delete(request, env, deviceDeleteMatch[1]);
       }
 
       return errorResponse('Not found', 404);

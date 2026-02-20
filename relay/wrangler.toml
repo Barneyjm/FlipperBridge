@@ -1,14 +1,14 @@
 name = "flipper-bridge"
 main = "src/index.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2025-12-01"
 
 [vars]
 ENVIRONMENT = "production"
 
 [[kv_namespaces]]
 binding = "SESSIONS"
-id = "<your-kv-namespace-id>"
-preview_id = "<your-preview-kv-namespace-id>"
+id = "0c860415554047758f5a3983ed709b4d"
+preview_id = "84301ed023d14ecbb1702b0091c5aa1c"
 
 [dev]
 port = 8787
