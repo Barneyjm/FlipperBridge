@@ -73,26 +73,31 @@ export const handleDevice = {
       return errorResponse('Rate limit exceeded', 429);
     }
 
-    // Refresh device TTL
-    await putDevice(env, deviceId, device);
+    // Re-read device to avoid KV eventual-consistency race with session creation.
+    // authDevice may have read a stale copy missing a freshly-bound session_id.
+    const freshDevice = await getDevice(env, deviceId) || device;
+
+    // Refresh device TTL (preserve the freshest session_id)
+    freshDevice.last_seen = Date.now();
+    await putDevice(env, deviceId, freshDevice);
 
     // No session bound
-    if (!device.session_id) {
+    if (!freshDevice.session_id) {
       return jsonResponse({ command: null });
     }
 
-    const session = await getSession(env, device.session_id);
+    const session = await getSession(env, freshDevice.session_id);
     if (!session) {
       // Session expired, clear the binding
-      device.session_id = null;
-      await putDevice(env, deviceId, device);
+      freshDevice.session_id = null;
+      await putDevice(env, deviceId, freshDevice);
       return jsonResponse({ command: null });
     }
 
     // Return pending command if one exists in "queued" state
     if (session.command && session.command.status === 'queued') {
       session.command.status = 'running';
-      await putSession(env, device.session_id, session);
+      await putSession(env, freshDevice.session_id, session);
 
       return jsonResponse({
         command_id: session.command.id,
@@ -113,9 +118,12 @@ export const handleDevice = {
     if (!auth) {
       return errorResponse('Unauthorized', 401);
     }
-    const { device } = auth;
+    const { device, deviceId } = auth;
 
-    if (!device.session_id) {
+    // Re-read to get freshest session_id
+    const freshDevice = await getDevice(env, deviceId) || device;
+
+    if (!freshDevice.session_id) {
       return errorResponse('No active session', 404);
     }
 
@@ -124,7 +132,7 @@ export const handleDevice = {
       return errorResponse('Missing required field: command_id');
     }
 
-    const session = await getSession(env, device.session_id);
+    const session = await getSession(env, freshDevice.session_id);
     if (!session) {
       return errorResponse('Session expired', 404);
     }
@@ -141,7 +149,7 @@ export const handleDevice = {
       session.command.result = body.result || '';
     }
 
-    await putSession(env, device.session_id, session);
+    await putSession(env, freshDevice.session_id, session);
 
     return jsonResponse({ ok: true });
   },
